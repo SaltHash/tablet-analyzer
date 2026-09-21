@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Report Rate Tester</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@200;400;500;600&display=swap" rel="stylesheet">
+<link href="style.css" rel="stylesheet">
+</head>
+<body>
+<div class="app" id="app" data-view="split">
+
+  <section class="stats ui" aria-label="Statistics">
+    <h1 class="name" id="name">No tablet connected</h1>
+    <div class="score-row"><span class="score" id="score">--</span><span class="score-label">score</span></div>
+    <dl>
+      <dt>Rate std. deviation</dt><dd id="rsd">--</dd>
+      <dt>Interval jitter</dt><dd id="jit">--</dd>
+      <dt>Longest interval</dt><dd id="maxint">--</dd>
+      <dt id="repLabel">Reports (2.0 s)</dt><dd id="samples">--</dd>
+    </dl>
+    <p class="formula">Score: 50% steadiness, 25% 1% low vs average, 25% 0.1% low vs average. Metrics use the selected window; the 0.1% low always uses the last 10 s.</p>
+    <button class="pill" id="connect" type="button">Connect tablet</button>
+  </section>
+
+  <div class="hero">
+    <div class="big" id="big">--hz</div>
+    <div class="lows" id="lows">1% low: --, 0.1% low: --</div>
+    <div class="hint" id="hint"></div>
+  </div>
+
+  <section class="viz ui" aria-label="Charts">
+    <header class="bar">
+      <div class="tabs" role="tablist" aria-label="View">
+        <button class="tab" role="tab" data-view="split" aria-selected="true">Split</button>
+        <button class="tab" role="tab" data-view="graph" aria-selected="false">Graph</button>
+        <button class="tab" role="tab" data-view="hist" aria-selected="false">Histogram</button>
+        <button class="tab" role="tab" data-view="pressure" aria-selected="false">Pressure</button>
+      </div>
+      <div class="controls">
+        <label class="win">Window
+          <input type="range" id="win" min="500" max="5000" step="100" value="2000" aria-label="Window length in milliseconds">
+          <output id="winOut" for="win">2.0 s</output>
+        </label>
+        <div class="export">
+          <button class="pill small" id="expBtn" type="button" aria-haspopup="true" aria-expanded="false">Export</button>
+          <div class="pop" id="pop" hidden>
+            <p class="pop-title">Record raw reports</p>
+            <label class="row">Duration
+              <input type="number" id="recSec" min="1" max="300" step="1" value="10" inputmode="numeric"> s
+            </label>
+            <button class="pill solid small" id="recStart" type="button">Start recording</button>
+            <div class="track" id="recTrack" hidden><div class="fill" id="recFill"></div></div>
+            <p class="note" id="recNote">Captures timestamp, dt, X, Y, pressure and tilt, then gives you a JSON file. Fields your tablet doesn't report are null.</p>
+            <button class="pill solid small" id="recDl" type="button" hidden>Download JSON</button>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="panes">
+      <div class="pane" id="paneGraph"><canvas id="cGraph" role="img" aria-label="Report intervals over time"></canvas></div>
+      <div class="pane" id="paneHist"><canvas id="cHist" role="img" aria-label="Distribution of report intervals"></canvas></div>
+      <div class="pane" id="panePress"><canvas id="cPress" role="img" aria-label="Pen pressure over time"></canvas><div class="nodata" id="pressNote" hidden></div></div>
+    </div>
+  </section>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
