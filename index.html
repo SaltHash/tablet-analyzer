@@ -4,17 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<title>Report Rate Tester</title>
+<title>Tablet Analyzer</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png">
+<link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@200;400;500;600&display=swap" rel="stylesheet">
-<link href="style.css" rel="stylesheet">
+<link href="/assets/style.css" rel="stylesheet">
 </head>
 <body>
 <div class="app" id="app" data-view="split">
 
   <section class="stats ui" aria-label="Statistics">
     <h1 class="name" id="name">No tablet connected</h1>
+    <div class="btn-group">
+      <button class="pill solid connect-btn" id="connect" type="button">Connect Tablet</button>
+      <button class="pill outline" id="disconnect" type="button" hidden>Disconnect Tablet</button>
+    </div>
     <div class="score-row"><span class="score" id="score">--</span><span class="score-label">score</span></div>
     <dl>
       <dt>Rate std. deviation</dt><dd id="rsd">--</dd>
@@ -23,7 +29,6 @@
       <dt id="repLabel">Reports (2.0 s)</dt><dd id="samples">--</dd>
     </dl>
     <p class="formula">Score: 50% steadiness, 25% 1% low vs average, 25% 0.1% low vs average. Metrics use the selected window; the 0.1% low always uses the last 10 s.</p>
-    <button class="pill" id="connect" type="button">Connect tablet</button>
   </section>
 
   <div class="hero">
@@ -68,6 +73,6 @@
   </section>
 </div>
 
-<script src="script.js"></script>
+<script src="/assets/script.js"></script>
 </body>
 </html>

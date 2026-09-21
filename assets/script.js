@@ -14,7 +14,7 @@
   const $ = id => document.getElementById(id);
   const app = $('app');
   const els = { name: $('name'), score: $('score'), rsd: $('rsd'), jit: $('jit'), maxint: $('maxint'), samples: $('samples'),
-                repLabel: $('repLabel'), big: $('big'), lows: $('lows'), hint: $('hint'), btn: $('connect') };
+                repLabel: $('repLabel'), big: $('big'), lows: $('lows'), hint: $('hint'), btn: $('connect'), disconnectBtn: $('disconnect') };
 
   const state = { win: 2000, view: 'split', layout: null };
   try { const w = +localStorage.getItem('rrt:win'); if (w >= 500 && w <= 5000) state.win = Math.round(w / 100) * 100; } catch (_) {}
@@ -119,7 +119,7 @@
     return v;
   }
 
-  // ---------- connection: WebHID, with browser pointer events as a fallback ----------
+  // ---------- connection: WebHID ----------
   let hidDevice = null, statusMsg = '', layouts = new Map(), primaryId = null;
   const hasHID = 'hid' in navigator;
   const reportCounts = new Map();
@@ -158,10 +158,25 @@
     return d.productName || ('HID device ' + d.vendorId.toString(16).padStart(4, '0') + ':' + d.productId.toString(16).padStart(4, '0'));
   }
 
+  async function unpairAllDevices(exceptDevice = null) {
+    if (!hasHID) return;
+    try {
+      const devices = await navigator.hid.getDevices();
+      for (const dev of devices) {
+        if (exceptDevice && dev === exceptDevice) continue;
+        try {
+          dev.removeEventListener('inputreport', onInputReport);
+          if (dev.opened) await dev.close();
+          if ('forget' in dev) await dev.forget();
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   async function connect(dev) {
-    if (hidDevice && hidDevice !== dev) {
-      try { hidDevice.removeEventListener('inputreport', onInputReport); await hidDevice.close(); } catch (_) {}
-    }
+    // Unpair/close all existing devices except the newly chosen device
+    await unpairAllDevices(dev);
+
     try {
       if (!dev.opened) await dev.open();
     } catch (err) {
@@ -175,8 +190,20 @@
     reportCounts.clear(); primaryId = null;
     clearData();
     els.name.textContent = deviceName(dev);
-    els.btn.textContent = 'Change tablet';
+    els.btn.textContent = 'Change Tablet';
+    els.btn.classList.remove('connect-btn');
+    els.disconnectBtn.hidden = false;
     try { localStorage.setItem('rrt:dev', dev.vendorId + ':' + dev.productId); } catch (_) {}
+  }
+
+  function resetConnectionUI() {
+    hidDevice = null; state.layout = null;
+    els.name.textContent = 'No tablet connected';
+    els.btn.textContent = 'Connect Tablet';
+    els.btn.classList.add('connect-btn');
+    els.disconnectBtn.hidden = true;
+    try { localStorage.removeItem('rrt:dev'); } catch (_) {}
+    clearData();
   }
 
   els.btn.addEventListener('click', async () => {
@@ -191,12 +218,17 @@
     }
   });
 
+  els.disconnectBtn.addEventListener('click', async () => {
+    await unpairAllDevices();
+    statusMsg = 'Tablet disconnected and unpaired.';
+    resetConnectionUI();
+  });
+
   if (hasHID) {
     navigator.hid.addEventListener('disconnect', e => {
       if (e.device === hidDevice) {
-        hidDevice = null; state.layout = null;
-        els.name.textContent = 'No tablet connected'; els.btn.textContent = 'Connect tablet';
-        statusMsg = 'Tablet disconnected.'; clearData();
+        statusMsg = 'Tablet disconnected.';
+        resetConnectionUI();
       }
     });
     (async () => {
@@ -209,25 +241,11 @@
     })();
   }
 
-  const rawSupported = 'onpointerrawupdate' in window;
-  function onPointer(e) {
-    if (hidDevice) return;
-    if (e.target && e.target.closest && e.target.closest('.ui')) { lastT = null; return; }
-    if (e.type === 'pointermove' && !rawSupported && e.getCoalescedEvents) {
-      const list = e.getCoalescedEvents();
-      if (list.length) { for (const c of list) addSample(norm(c.timeStamp), c.clientX, c.clientY, c.pressure, c.tiltX, c.tiltY); return; }
-    }
-    addSample(norm(e.timeStamp), e.clientX, e.clientY, e.pressure, e.tiltX, e.tiltY);
-  }
-  window.addEventListener(rawSupported ? 'pointerrawupdate' : 'pointermove', onPointer, { passive: true });
-  window.addEventListener('pointerdown', () => { lastT = null; });
-  window.addEventListener('pointerup', () => { lastT = null; });
-  document.documentElement.addEventListener('pointerleave', () => { if (!hidDevice) lastT = null; });
   window.addEventListener('contextmenu', e => e.preventDefault());
 
   function pressRange() {
     if (hidDevice) { const P = state.layout && state.layout.P; return (P && P.max > P.min) ? P : null; }
-    return { min: 0, max: 1 };
+    return null;
   }
 
   // ---------- rolling stats ----------
@@ -298,8 +316,8 @@
     let hint;
     if (statusMsg) hint = statusMsg;
     else if (hidDevice) hint = held ? '' : 'Move your pen over the tablet.';
-    else if (!hasHID) hint = 'This browser has no WebHID support (use Chrome, Edge or Opera). Measuring browser pointer events instead.';
-    else hint = held ? 'Not connected. Measuring browser pointer events; connect your tablet for raw reports.' : 'Connect your tablet for raw reports, or move the pointer here to measure browser events.';
+    else if (!hasHID) hint = 'This browser has no WebHID support. Please use Chrome, Edge, or Opera.';
+    else hint = 'Please click "Connect Tablet" to select your device via WebHID.';
     if (els.hint.textContent !== hint) els.hint.textContent = hint;
 
     // pressure pane note
