@@ -25,8 +25,21 @@
   const rTX = new Float32Array(CAP), rTY = new Float32Array(CAP);
   let head = 0, count = 0, lastT = null, meanDt = 0, held = false, histState = null, histX = 10;
 
+  // crosshair trail: recent raw (x, y, t) samples, newest last, used to paint the
+  // full-screen position overlay. Pruned by age in drawCrosshair().
+  const crossTrail = [];
+  // fallback trail from browser pointer events (CSS pixels), used only for the
+  // crosshair overlay when the tablet's HID reports don't expose a usable X/Y
+  // field to WebHID — never used for any of the rate/jitter statistics.
+  const mouseTrail = [];
+  // running observed bounds for X/Y, used as a fallback when the HID descriptor's
+  // logical min/max is missing or degenerate (min === max, or absent entirely)
+  let obsXMin = Infinity, obsXMax = -Infinity, obsYMin = Infinity, obsYMax = -Infinity;
+
   function clearData() {
     head = 0; count = 0; lastT = null; meanDt = 0; held = false; histState = null; histX = 10;
+    crossTrail.length = 0;
+    obsXMin = Infinity; obsXMax = -Infinity; obsYMin = Infinity; obsYMax = -Infinity;
     showPlaceholders();
   }
 
@@ -47,6 +60,11 @@
     const i = head;
     rT[i] = t; rD[i] = dt; rX[i] = x; rY[i] = y; rP[i] = p; rTX[i] = tx; rTY[i] = ty;
     head = (head + 1) % CAP; if (count < CAP) count++;
+    if (x === x && y === y) {
+      crossTrail.push({ x, y, t });
+      if (x < obsXMin) obsXMin = x; if (x > obsXMax) obsXMax = x;
+      if (y < obsYMin) obsYMin = y; if (y > obsYMax) obsYMax = y;
+    }
     if (rec.active) recordRow(t, dt, x, y, p, tx, ty);
   }
 
@@ -243,8 +261,35 @@
 
   window.addEventListener('contextmenu', e => e.preventDefault());
 
+  // crosshair-only fallback: track real pointer position from browser events.
+  // Some tablets move the OS cursor and drive apps like osu!/OpenTabletDriver
+  // fine at the driver level, but don't expose a decodable X/Y usage to WebHID —
+  // in that case the crosshair overlay falls back to this instead of going dark.
+  // This never feeds the ring buffers or any statistic, only drawCrosshair().
+  window.addEventListener('pointermove', e => {
+    mouseTrail.push({ x: e.clientX, y: e.clientY, t: performance.now() });
+    if (mouseTrail.length > 1000) mouseTrail.splice(0, mouseTrail.length - 1000);
+  }, { passive: true });
+
   function pressRange() {
     if (hidDevice) { const P = state.layout && state.layout.P; return (P && P.max > P.min) ? P : null; }
+    return null;
+  }
+
+  // full X/Y range for the currently connected device, used to map a raw sample
+  // onto the tablet's active area (and from there, onto the screen). Prefers the
+  // HID descriptor's logical min/max; falls back to the observed min/max seen so
+  // far when the descriptor's range is missing or degenerate (common on some
+  // tablets whose firmware reports min === max or omits the field entirely).
+  function crossRange() {
+    if (!hidDevice) return null;
+    const L = state.layout, fx = L && L.X, fy = L && L.Y;
+    if (fx && fy && fx.max > fx.min && fy.max > fy.min) {
+      return { xMin: fx.min, xMax: fx.max, yMin: fy.min, yMax: fy.max, source: 'descriptor' };
+    }
+    if (obsXMax > obsXMin && obsYMax > obsYMin) {
+      return { xMin: obsXMin, xMax: obsXMax, yMin: obsYMin, yMax: obsYMax, source: 'observed' };
+    }
     return null;
   }
 
@@ -483,7 +528,8 @@
     }).observe(pane);
     return o;
   }
-  const cv = { graph: mkCanvas('cGraph', 'paneGraph'), hist: mkCanvas('cHist', 'paneHist'), press: mkCanvas('cPress', 'panePress') };
+  const cv = { graph: mkCanvas('cGraph', 'paneGraph'), hist: mkCanvas('cHist', 'paneHist'), press: mkCanvas('cPress', 'panePress'),
+               cross: mkCanvas('cCross', 'app') };
   const PAD = { t: 30, b: 24, l: 48, r: 14 };
 
   function frameGrid(o, title, rows, fmt) { // rows: number of grid divisions; fmt(i) -> label for row i (0 = bottom)
@@ -623,11 +669,74 @@
     }
   }
 
+  // crosshair overlay: one marker per incoming sample, mapped from the tablet's
+  // active area onto the full screen, painted above everything but the stats panel.
+  const CROSS_MAX_AGE = 300; // ms a marker stays visible before fully fading
+  const CROSS_ARM = 5, CROSS_GAP = 0, CROSS_BUCKETS = 1;
+  function drawCrosshair() {
+    const o = cv.cross; if (!o.W || !o.H) return;
+    const ctx = o.ctx, W = o.W, H = o.H;
+    ctx.clearRect(0, 0, W, H);
+    const now = performance.now();
+    while (crossTrail.length && now - crossTrail[0].t > CROSS_MAX_AGE) crossTrail.shift();
+    while (mouseTrail.length && now - mouseTrail[0].t > CROSS_MAX_AGE) mouseTrail.shift();
+
+    // prefer real HID position data; fall back to browser pointer events only
+    // when the tablet's reports don't decode to a usable X/Y field
+    const R = crossRange();
+    let trail, toScreen;
+    if (R && crossTrail.length) {
+      const spanX = R.xMax - R.xMin, spanY = R.yMax - R.yMin;
+      trail = crossTrail;
+      toScreen = e => {
+        const nx = Math.min(1, Math.max(0, (e.x - R.xMin) / spanX));
+        const ny = Math.min(1, Math.max(0, (e.y - R.yMin) / spanY));
+        return [nx * W, ny * H];
+      };
+    } else if (mouseTrail.length) {
+      const rect = o.canvas.getBoundingClientRect();
+      trail = mouseTrail;
+      toScreen = e => [e.x - rect.left, e.y - rect.top];
+    } else {
+      return;
+    }
+    const arm = (p, cx, cy) => {
+      p.moveTo(cx - CROSS_ARM, cy); p.lineTo(cx - CROSS_GAP, cy);
+      p.moveTo(cx + CROSS_GAP, cy); p.lineTo(cx + CROSS_ARM, cy);
+      p.moveTo(cx, cy - CROSS_ARM); p.lineTo(cx, cy - CROSS_GAP);
+      p.moveTo(cx, cy + CROSS_GAP); p.lineTo(cx, cy + CROSS_ARM);
+    };
+    // bucket the trail by age so we only issue a handful of stroke() calls
+    // instead of one per sample, however dense the report stream is
+    const paths = Array.from({ length: CROSS_BUCKETS }, () => new Path2D());
+    for (let i = 0; i < trail.length - 1; i++) {
+      const e = trail[i], frac = 1 - (now - e.t) / CROSS_MAX_AGE;
+      if (frac <= 0) continue;
+      const bi = Math.min(CROSS_BUCKETS - 1, Math.floor(frac * CROSS_BUCKETS));
+      const [cx, cy] = toScreen(e);
+      arm(paths[bi], cx, cy);
+    }
+    ctx.lineCap = 'round'; ctx.lineWidth = 1.5; ctx.strokeStyle = C.pink;
+    for (let b = 0; b < CROSS_BUCKETS; b++) {
+      ctx.globalAlpha = Math.pow((b + 1) / CROSS_BUCKETS, 1.6) * 0.55;
+      ctx.stroke(paths[b]);
+    }
+    // the newest sample gets its own full-opacity marker with a small ring
+    const last = trail[trail.length - 1];
+    const [cx, cy] = toScreen(last);
+    ctx.globalAlpha = 1; ctx.lineWidth = 1.8; ctx.strokeStyle = C.ink;
+    const cur = new Path2D(); arm(cur, cx, cy); ctx.stroke(cur);
+    ctx.strokeStyle = C.pink; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, 6.2832); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
   (function loop() {
     const v = state.view;
     if (v === 'split' || v === 'graph') drawGraph();
     if (v === 'split' || v === 'hist') drawHist();
     if (v === 'pressure') drawPress();
+    drawCrosshair();
     requestAnimationFrame(loop);
   })();
 })();
