@@ -16,30 +16,19 @@
   const els = { name: $('name'), score: $('score'), rsd: $('rsd'), jit: $('jit'), maxint: $('maxint'), samples: $('samples'),
                 repLabel: $('repLabel'), big: $('big'), lows: $('lows'), hint: $('hint'), btn: $('connect'), disconnectBtn: $('disconnect') };
 
-  const state = { win: 2000, view: 'split', layout: null };
+  const state = { win: 2000, view: 'split' };
   try { const w = +localStorage.getItem('rrt:win'); if (w >= 500 && w <= 5000) state.win = Math.round(w / 100) * 100; } catch (_) {}
 
   // ---------- sample store ----------
   const rT = new Float64Array(CAP), rD = new Float32Array(CAP);
-  const rX = new Float32Array(CAP), rY = new Float32Array(CAP), rP = new Float32Array(CAP);
-  const rTX = new Float32Array(CAP), rTY = new Float32Array(CAP);
   let head = 0, count = 0, lastT = null, meanDt = 0, held = false, histState = null, histX = 10;
 
-  // crosshair trail: recent raw (x, y, t) samples, newest last, used to paint the
-  // full-screen position overlay. Pruned by age in drawCrosshair().
-  const crossTrail = [];
-  // fallback trail from browser pointer events (CSS pixels), used only for the
-  // crosshair overlay when the tablet's HID reports don't expose a usable X/Y
-  // field to WebHID — never used for any of the rate/jitter statistics.
+  // Trail mapped entirely from browser pointer events (CSS pixels) for crosshair drawing.
   const mouseTrail = [];
-  // running observed bounds for X/Y, used as a fallback when the HID descriptor's
-  // logical min/max is missing or degenerate (min === max, or absent entirely)
-  let obsXMin = Infinity, obsXMax = -Infinity, obsYMin = Infinity, obsYMax = -Infinity;
 
   function clearData() {
     head = 0; count = 0; lastT = null; meanDt = 0; held = false; histState = null; histX = 10;
-    crossTrail.length = 0;
-    obsXMin = Infinity; obsXMax = -Infinity; obsYMin = Infinity; obsYMax = -Infinity;
+    mouseTrail.length = 0;
     showPlaceholders();
   }
 
@@ -49,7 +38,7 @@
     return ts - tsShift;
   }
 
-  function addSample(t, x, y, p, tx, ty) {
+  function addSample(t) {
     let dt = NaN;
     if (lastT !== null) {
       const d = t - lastT;
@@ -58,87 +47,13 @@
     }
     lastT = t;
     const i = head;
-    rT[i] = t; rD[i] = dt; rX[i] = x; rY[i] = y; rP[i] = p; rTX[i] = tx; rTY[i] = ty;
+    rT[i] = t; rD[i] = dt;
     head = (head + 1) % CAP; if (count < CAP) count++;
-    if (x === x && y === y) {
-      crossTrail.push({ x, y, t });
-      if (x < obsXMin) obsXMin = x; if (x > obsXMax) obsXMax = x;
-      if (y < obsYMin) obsYMin = y; if (y > obsYMax) obsYMax = y;
-    }
-    if (rec.active) recordRow(t, dt, x, y, p, tx, ty);
-  }
-
-  // ---------- HID report parsing (X, Y, pressure, tilt) ----------
-  // Digitizer usage page 0x0D: 0x30 tip pressure, 0x3D/0x3E x/y tilt. Generic Desktop 0x01: 0x30 X, 0x31 Y.
-  const WANTED = { '1:48': 'X', '1:49': 'Y', '13:48': 'P', '13:61': 'TX', '13:62': 'TY' };
-
-  function mkLayout(list) {
-    let bit = 0; const lay = { bits: 0, X: null, Y: null, P: null, TX: null, TY: null };
-    for (const { item, page } of list) {
-      const size = item.reportSize | 0, cnt = item.reportCount | 0;
-      if (!item.isConstant && size > 0) {
-        const hasList = item.usages && item.usages.length > 0;
-        if (item.isRange || hasList) {
-          for (let i = 0; i < cnt; i++) {
-            const u = item.isRange ? item.usageMinimum + Math.min(i, item.usageMaximum - item.usageMinimum)
-                                   : item.usages[Math.min(i, item.usages.length - 1)];
-            const up = u > 0xFFFF ? ((u >>> 16) & 0xFFFF) : page, id = u & 0xFFFF;
-            const key = WANTED[up + ':' + id];
-            if (key && !lay[key]) {
-              lay[key] = { off: bit + i * size, size, signed: item.logicalMinimum < 0,
-                           min: item.logicalMinimum, max: item.logicalMaximum,
-                           pmin: item.physicalMinimum, pmax: item.physicalMaximum,
-                           unit: item.unit, exp: item.unitExponent };
-            }
-          }
-        }
-      }
-      bit += size * cnt;
-    }
-    lay.bits = bit;
-    return lay;
-  }
-
-  function buildLayouts(dev) {
-    const out = new Map();
-    try {
-      // Two candidate readings of the descriptor tree; the right one is picked by matching real report length.
-      const A = new Map(), B = new Map();
-      const add = (map, col, rep) => {
-        const id = rep.reportId || 0;
-        if (!map.has(id)) map.set(id, []);
-        for (const item of (rep.items || [])) map.get(id).push({ item, page: col.usagePage });
-      };
-      (function walk(cols, top) {
-        for (const c of cols) {
-          for (const r of (c.inputReports || [])) { add(A, c, r); if (top) add(B, c, r); }
-          walk(c.children || [], false);
-        }
-      })(dev.collections || [], true);
-      for (const id of A.keys()) out.set(id, { cands: [mkLayout(A.get(id)), mkLayout(B.get(id) || [])], chosen: undefined });
-    } catch (_) {}
-    return out;
-  }
-
-  function readField(dv, f) {
-    const off = f.off, size = f.size;
-    let v;
-    if ((off & 7) === 0 && size === 16 && (off >> 3) + 2 <= dv.byteLength) v = dv.getUint16(off >> 3, true);
-    else if ((off & 7) === 0 && size === 8 && (off >> 3) < dv.byteLength) v = dv.getUint8(off >> 3);
-    else {
-      v = 0;
-      for (let i = 0; i < size; i++) {
-        const idx = off + i, byte = idx >> 3;
-        if (byte >= dv.byteLength) return NaN;
-        v += ((dv.getUint8(byte) >> (idx & 7)) & 1) * Math.pow(2, i);
-      }
-    }
-    if (f.signed && v >= Math.pow(2, size - 1)) v -= Math.pow(2, size);
-    return v;
+    if (rec.active) recordRow(t, dt);
   }
 
   // ---------- connection: WebHID ----------
-  let hidDevice = null, statusMsg = '', layouts = new Map(), primaryId = null;
+  let hidDevice = null, statusMsg = '', primaryId = null;
   const hasHID = 'hid' in navigator;
   const reportCounts = new Map();
 
@@ -146,30 +61,15 @@
     const id = e.reportId;
     const c = (reportCounts.get(id) || 0) + 1;
     reportCounts.set(id, c);
+
+    // Automatically hone in on the ID reporting the highest frequency
     if (primaryId === null) primaryId = id;
     else if (id !== primaryId && c > 1.5 * (reportCounts.get(primaryId) || 0)) { primaryId = id; lastT = null; }
     if (id !== primaryId) return;
 
-    let x = NaN, y = NaN, p = NaN, tx = NaN, ty = NaN;
-    const entry = layouts.get(id);
-    if (entry) {
-      if (entry.chosen === undefined) {
-        const len = e.data.byteLength;
-        entry.chosen = entry.cands.find(l => Math.ceil(l.bits / 8) === len) || false;
-      }
-      const L = entry.chosen;
-      if (L) {
-        state.layout = L;
-        const dv = e.data;
-        if (L.X) x = readField(dv, L.X);
-        if (L.Y) y = readField(dv, L.Y);
-        if (L.P) p = readField(dv, L.P);
-        if (L.TX) tx = readField(dv, L.TX);
-        if (L.TY) ty = readField(dv, L.TY);
-      }
-    }
-    addSample(norm(e.timeStamp), x, y, p, tx, ty);
+    addSample(norm(e.timeStamp));
   }
+
   setInterval(() => { for (const [k, v] of reportCounts) reportCounts.set(k, v * 0.5); }, 5000);
 
   function deviceName(d) {
@@ -192,7 +92,6 @@
   }
 
   async function connect(dev) {
-    // Unpair/close all existing devices except the newly chosen device
     await unpairAllDevices(dev);
 
     try {
@@ -201,21 +100,23 @@
       statusMsg = 'Could not open ' + deviceName(dev) + '. A tablet driver or another app may be using it. Close it and try again.';
       return;
     }
+
     dev.removeEventListener('inputreport', onInputReport);
     dev.addEventListener('inputreport', onInputReport);
     hidDevice = dev; statusMsg = '';
-    layouts = buildLayouts(dev); state.layout = null;
     reportCounts.clear(); primaryId = null;
     clearData();
+
     els.name.textContent = deviceName(dev);
     els.btn.textContent = 'Change Tablet';
     els.btn.classList.remove('connect-btn');
     els.disconnectBtn.hidden = false;
+
     try { localStorage.setItem('rrt:dev', dev.vendorId + ':' + dev.productId); } catch (_) {}
   }
 
   function resetConnectionUI() {
-    hidDevice = null; state.layout = null;
+    hidDevice = null;
     els.name.textContent = 'No tablet connected';
     els.btn.textContent = 'Connect Tablet';
     els.btn.classList.add('connect-btn');
@@ -261,37 +162,20 @@
 
   window.addEventListener('contextmenu', e => e.preventDefault());
 
-  // crosshair-only fallback: track real pointer position from browser events.
-  // Some tablets move the OS cursor and drive apps like osu!/OpenTabletDriver
-  // fine at the driver level, but don't expose a decodable X/Y usage to WebHID —
-  // in that case the crosshair overlay falls back to this instead of going dark.
-  // This never feeds the ring buffers or any statistic, only drawCrosshair().
+  // Use getCoalescedEvents for rendering high-speed hardware cursors smoothly
   window.addEventListener('pointermove', e => {
-    mouseTrail.push({ x: e.clientX, y: e.clientY, t: performance.now() });
-    if (mouseTrail.length > 1000) mouseTrail.splice(0, mouseTrail.length - 1000);
+    const events = (typeof e.getCoalescedEvents === 'function')
+      ? e.getCoalescedEvents()
+      : [e];
+
+    for (const ev of events) {
+      mouseTrail.push({ x: ev.clientX, y: ev.clientY, t: performance.now() });
+    }
+
+    if (mouseTrail.length > 1000) {
+      mouseTrail.splice(0, mouseTrail.length - 1000);
+    }
   }, { passive: true });
-
-  function pressRange() {
-    if (hidDevice) { const P = state.layout && state.layout.P; return (P && P.max > P.min) ? P : null; }
-    return null;
-  }
-
-  // full X/Y range for the currently connected device, used to map a raw sample
-  // onto the tablet's active area (and from there, onto the screen). Prefers the
-  // HID descriptor's logical min/max; falls back to the observed min/max seen so
-  // far when the descriptor's range is missing or degenerate (common on some
-  // tablets whose firmware reports min === max or omits the field entirely).
-  function crossRange() {
-    if (!hidDevice) return null;
-    const L = state.layout, fx = L && L.X, fy = L && L.Y;
-    if (fx && fy && fx.max > fx.min && fy.max > fy.min) {
-      return { xMin: fx.min, xMax: fx.max, yMin: fy.min, yMax: fy.max, source: 'descriptor' };
-    }
-    if (obsXMax > obsXMin && obsYMax > obsYMin) {
-      return { xMin: obsXMin, xMax: obsXMax, yMin: obsYMin, yMax: obsYMax, source: 'observed' };
-    }
-    return null;
-  }
 
   // ---------- rolling stats ----------
   const tmpW = new Float32Array(CAP), tmp10 = new Float32Array(CAP);
@@ -321,7 +205,7 @@
       }
     }
 
-    if (nW >= 10) { // otherwise keep showing the last values
+    if (nW >= 10) {
       held = true;
       meanDt = sum / nW;
       const avg = 1000 / meanDt;
@@ -344,7 +228,6 @@
       const r1 = Math.min(1, low1 / avg), r01 = Math.min(1, low01 / avg);
       els.score.textContent = Math.round(100 * (0.5 * steady + 0.25 * r1 + 0.25 * r01));
 
-      // histogram of the window, x-range picked from the data with hysteresis so it doesn't jump around
       const need = Math.max(2 * sW[nW >> 1], 1.3 * pct(sW, nW, 0.99));
       const target = NICE_X.find(v => v >= need) || 100;
       if (target > histX) histX = target; else if (target < histX * 0.5) histX = target;
@@ -364,16 +247,6 @@
     else if (!hasHID) hint = 'This browser has no WebHID support. Please use Chrome, Edge, or Opera.';
     else hint = 'Please click "Connect Tablet" to select your device via WebHID.';
     if (els.hint.textContent !== hint) els.hint.textContent = hint;
-
-    // pressure pane note
-    const note = $('pressNote');
-    let pn = '';
-    if (state.view === 'pressure') {
-      const pr = pressRange();
-      if (!count) pn = 'Waiting for pen data.';
-      else if (!pr || rP[(head - 1 + CAP) % CAP] !== rP[(head - 1 + CAP) % CAP]) pn = 'This tablet\u2019s reports don\u2019t expose a standard pressure field.';
-    }
-    note.hidden = !pn; if (note.textContent !== pn) note.textContent = pn;
   }
 
   // ---------- window slider ----------
@@ -407,19 +280,27 @@
       }
     });
   });
-  { let v = 'split'; try { v = localStorage.getItem('rrt:view') || 'split'; } catch (_) {} setView(tabs.some(t => t.dataset.view === v) ? v : 'split'); }
+  {
+    let v = 'split';
+    try { v = localStorage.getItem('rrt:view') || 'split'; } catch (_) {}
+
+    // Ensure we don't try to load the deleted pressure tab from localStorage
+    if (v === 'pressure') v = 'split';
+
+    setView(tabs.some(t => t.dataset.view === v) ? v : 'split');
+  }
 
   // ---------- recording / export ----------
   const rec = { active: false, done: false, dur: 10000, t0: 0, rows: [], startedISO: '' };
   const expBtn = $('expBtn'), pop = $('pop'), recStart = $('recStart'), recDl = $('recDl'),
         recNote = $('recNote'), recTrack = $('recTrack'), recFill = $('recFill'), recSec = $('recSec');
-  const IDLE_NOTE = 'Captures timestamp, dt, X, Y, pressure and tilt, then gives you a JSON file. Fields your tablet doesn\u2019t report are null.';
+  const IDLE_NOTE = 'Captures timestamp and dt, then gives you a JSON file.';
 
-  function recordRow(t, dt, x, y, p, tx, ty) {
+  function recordRow(t, dt) {
     const rel = t - rec.t0;
     if (rel < 0) return;
     if (rel > rec.dur) { finishRec(); return; }
-    rec.rows.push([rel, dt, x, y, p, tx, ty]);
+    rec.rows.push([rel, dt]);
   }
   function startRec() {
     const s = Math.max(1, Math.min(300, Math.round(+recSec.value || 10)));
@@ -454,34 +335,23 @@
     }
   }
 
-  const nn = v => (v !== v || v === undefined) ? null : v;
   const r3 = v => (v !== v) ? null : Math.round(v * 1000) / 1000;
-  function fieldMeta(f) {
-    return f ? { logicalMin: f.min, logicalMax: f.max, physicalMin: f.pmin, physicalMax: f.pmax, unit: f.unit, unitExponent: f.exp } : null;
-  }
+
   function buildJSON() {
-    const L = state.layout;
     const meta = {
-      format: 'tablet-report-recording', version: 1,
+      format: 'tablet-report-recording', version: 2,
       source: hidDevice ? 'webhid' : 'browser-pointer-events',
       device: hidDevice ? { name: deviceName(hidDevice), vendorId: hidDevice.vendorId, productId: hidDevice.productId, reportId: primaryId } : null,
       startedAt: rec.startedISO, durationMs: rec.dur, reports: rec.rows.length,
-      columns: ['timestamp', 'dt', 'x', 'y', 'pressure', 'tilt'],
+      columns: ['timestamp', 'dt'],
       units: {
         timestamp: 'ms since recording started',
-        dt: 'ms since previous report, null for the first report or after a gap over ' + GAP_MS + ' ms',
-        x: hidDevice ? 'raw device units' : 'CSS pixels', y: hidDevice ? 'raw device units' : 'CSS pixels',
-        pressure: hidDevice ? 'raw device units' : '0 to 1',
-        tilt: '[tiltX, tiltY] as reported, or null'
-      },
-      ranges: hidDevice
-        ? { x: fieldMeta(L && L.X), y: fieldMeta(L && L.Y), pressure: fieldMeta(L && L.P), tiltX: fieldMeta(L && L.TX), tiltY: fieldMeta(L && L.TY) }
-        : { pressure: { logicalMin: 0, logicalMax: 1 }, tilt: 'degrees' }
+        dt: 'ms since previous report, null for the first report or after a gap over ' + GAP_MS + ' ms'
+      }
     };
     const head = JSON.stringify(meta, null, 2);
     const rows = rec.rows.map(r => JSON.stringify([
-      r3(r[0]), r3(r[1]), nn(r[2]), nn(r[3]), nn(r[4]),
-      (r[5] !== r[5] && r[6] !== r[6]) ? null : [nn(r[5]), nn(r[6])]
+      r3(r[0]), r3(r[1])
     ]));
     return head.slice(0, -2) + ',\n  "rows": [\n    ' + rows.join(',\n    ') + '\n  ]\n}\n';
   }
@@ -528,11 +398,11 @@
     }).observe(pane);
     return o;
   }
-  const cv = { graph: mkCanvas('cGraph', 'paneGraph'), hist: mkCanvas('cHist', 'paneHist'), press: mkCanvas('cPress', 'panePress'),
+  const cv = { graph: mkCanvas('cGraph', 'paneGraph'), hist: mkCanvas('cHist', 'paneHist'),
                cross: mkCanvas('cCross', 'app') };
   const PAD = { t: 30, b: 24, l: 48, r: 14 };
 
-  function frameGrid(o, title, rows, fmt) { // rows: number of grid divisions; fmt(i) -> label for row i (0 = bottom)
+  function frameGrid(o, title, rows, fmt) {
     const { ctx, W, H } = o, pw = W - PAD.l - PAD.r, ph = H - PAD.t - PAD.b;
     ctx.clearRect(0, 0, W, H);
     ctx.font = FONT; ctx.fillStyle = C.soft; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
@@ -548,7 +418,6 @@
     return { pw, ph };
   }
 
-  // draws a time series as a line with the area beneath it filled; skip(idx) -> true to break the line
   function timeSeries(o, k, now, valueAt, yOf, base, color, fill, isBreak) {
     const { ctx, W, H } = o, pw = W - PAD.l - PAD.r, win = state.win;
     const xOf = t => PAD.l + (1 - (now - t) / win) * pw;
@@ -617,19 +486,6 @@
     }
   }
 
-  function drawPress() {
-    const o = cv.press; if (!o.W || !o.H) return;
-    const now = performance.now(), ctx = o.ctx;
-    const { ph } = frameGrid(o, 'Pressure', 4, i => (i * 25) + '%');
-    xLabels(o);
-    const pr = pressRange(); if (!pr) return;
-    const span = pr.max - pr.min;
-    const norm01 = v => Math.min(1, Math.max(0, (v - pr.min) / span));
-    const yOf = v => PAD.t + ph - norm01(v) * ph;
-    const k = windowCount(now);
-    if (k >= 2) timeSeries(o, k, now, idx => rP[idx], yOf, PAD.t + ph, C.blue, C.blueFill);
-  }
-
   function drawHist() {
     const o = cv.hist; if (!o.W || !o.H) return;
     const h = histState, ctx = o.ctx;
@@ -639,7 +495,6 @@
     ctx.font = FONT;
     if (!h) { ctx.fillStyle = C.soft; ctx.textAlign = 'center'; ctx.fillText('Waiting for data', PAD.l + pw / 2, PAD.t + ph / 2); return; }
 
-    // bars
     const bw = pw / h.nb, gap = bw > 4 ? 1 : 0;
     for (let i = 0; i < h.nb; i++) {
       const c = h.bins[i]; if (!c) continue;
@@ -647,7 +502,7 @@
       ctx.fillStyle = (i === h.nb - 1 && h.over > 0) ? C.yellow : C.pink;
       ctx.fillRect(PAD.l + i * bw, PAD.t + ph - bh, Math.max(1, bw - gap), bh);
     }
-    // x axis ticks
+
     const step = [0.5, 1, 2, 5, 10, 20].find(s => h.xmax / s <= 10) || 20;
     ctx.fillStyle = C.soft; ctx.textBaseline = 'alphabetic';
     for (let v = 0; v <= h.xmax + 1e-9; v += step) {
@@ -655,7 +510,7 @@
       ctx.textAlign = v === 0 ? 'left' : (v >= h.xmax - 1e-9 ? 'right' : 'center');
       ctx.fillText(v + (v === 0 || v >= h.xmax - 1e-9 ? ' ms' : ''), x, o.H - 6);
     }
-    // mean marker
+
     if (h.mean > 0 && h.mean < h.xmax) {
       const x = Math.round(PAD.l + h.mean / h.xmax * pw) + .5;
       ctx.save(); ctx.setLineDash([4, 5]); ctx.strokeStyle = C.ink; ctx.globalAlpha = .4; ctx.lineWidth = 1;
@@ -669,45 +524,28 @@
     }
   }
 
-  // crosshair overlay: one marker per incoming sample, mapped from the tablet's
-  // active area onto the full screen, painted above everything but the stats panel.
-  const CROSS_MAX_AGE = 300; // ms a marker stays visible before fully fading
+  const CROSS_MAX_AGE = 300;
   const CROSS_ARM = 5, CROSS_GAP = 0, CROSS_BUCKETS = 1;
   function drawCrosshair() {
     const o = cv.cross; if (!o.W || !o.H) return;
     const ctx = o.ctx, W = o.W, H = o.H;
     ctx.clearRect(0, 0, W, H);
     const now = performance.now();
-    while (crossTrail.length && now - crossTrail[0].t > CROSS_MAX_AGE) crossTrail.shift();
     while (mouseTrail.length && now - mouseTrail[0].t > CROSS_MAX_AGE) mouseTrail.shift();
 
-    // prefer real HID position data; fall back to browser pointer events only
-    // when the tablet's reports don't decode to a usable X/Y field
-    const R = crossRange();
-    let trail, toScreen;
-    if (R && crossTrail.length) {
-      const spanX = R.xMax - R.xMin, spanY = R.yMax - R.yMin;
-      trail = crossTrail;
-      toScreen = e => {
-        const nx = Math.min(1, Math.max(0, (e.x - R.xMin) / spanX));
-        const ny = Math.min(1, Math.max(0, (e.y - R.yMin) / spanY));
-        return [nx * W, ny * H];
-      };
-    } else if (mouseTrail.length) {
-      const rect = o.canvas.getBoundingClientRect();
-      trail = mouseTrail;
-      toScreen = e => [e.x - rect.left, e.y - rect.top];
-    } else {
-      return;
-    }
+    if (!mouseTrail.length) return;
+
+    const rect = o.canvas.getBoundingClientRect();
+    const trail = mouseTrail;
+    const toScreen = e => [e.x - rect.left, e.y - rect.top];
+
     const arm = (p, cx, cy) => {
       p.moveTo(cx - CROSS_ARM, cy); p.lineTo(cx - CROSS_GAP, cy);
       p.moveTo(cx + CROSS_GAP, cy); p.lineTo(cx + CROSS_ARM, cy);
       p.moveTo(cx, cy - CROSS_ARM); p.lineTo(cx, cy - CROSS_GAP);
       p.moveTo(cx, cy + CROSS_GAP); p.lineTo(cx, cy + CROSS_ARM);
     };
-    // bucket the trail by age so we only issue a handful of stroke() calls
-    // instead of one per sample, however dense the report stream is
+
     const paths = Array.from({ length: CROSS_BUCKETS }, () => new Path2D());
     for (let i = 0; i < trail.length - 1; i++) {
       const e = trail[i], frac = 1 - (now - e.t) / CROSS_MAX_AGE;
@@ -716,12 +554,13 @@
       const [cx, cy] = toScreen(e);
       arm(paths[bi], cx, cy);
     }
+
     ctx.lineCap = 'round'; ctx.lineWidth = 1.5; ctx.strokeStyle = C.pink;
     for (let b = 0; b < CROSS_BUCKETS; b++) {
       ctx.globalAlpha = Math.pow((b + 1) / CROSS_BUCKETS, 1.6) * 0.55;
       ctx.stroke(paths[b]);
     }
-    // the newest sample gets its own full-opacity marker with a small ring
+
     const last = trail[trail.length - 1];
     const [cx, cy] = toScreen(last);
     ctx.globalAlpha = 1; ctx.lineWidth = 1.8; ctx.strokeStyle = C.ink;
@@ -735,7 +574,6 @@
     const v = state.view;
     if (v === 'split' || v === 'graph') drawGraph();
     if (v === 'split' || v === 'hist') drawHist();
-    if (v === 'pressure') drawPress();
     drawCrosshair();
     requestAnimationFrame(loop);
   })();

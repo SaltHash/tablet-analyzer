@@ -43,7 +43,6 @@
         <button class="tab" role="tab" data-view="split" aria-selected="true">Split</button>
         <button class="tab" role="tab" data-view="graph" aria-selected="false">Graph</button>
         <button class="tab" role="tab" data-view="hist" aria-selected="false">Histogram</button>
-        <button class="tab" role="tab" data-view="pressure" aria-selected="false">Pressure</button>
       </div>
       <div class="controls">
         <label class="win">Window
@@ -59,7 +58,7 @@
             </label>
             <button class="pill solid small" id="recStart" type="button">Start recording</button>
             <div class="track" id="recTrack" hidden><div class="fill" id="recFill"></div></div>
-            <p class="note" id="recNote">Captures timestamp, dt, X, Y, pressure and tilt, then gives you a JSON file. Fields your tablet doesn't report are null.</p>
+            <p class="note" id="recNote">Captures timestamp and dt, then gives you a JSON file.</p>
             <button class="pill solid small" id="recDl" type="button" hidden>Download JSON</button>
           </div>
         </div>
@@ -68,7 +67,6 @@
     <div class="panes">
       <div class="pane" id="paneGraph"><canvas id="cGraph" role="img" aria-label="Report intervals over time"></canvas></div>
       <div class="pane" id="paneHist"><canvas id="cHist" role="img" aria-label="Distribution of report intervals"></canvas></div>
-      <div class="pane" id="panePress"><canvas id="cPress" role="img" aria-label="Pen pressure over time"></canvas><div class="nodata" id="pressNote" hidden></div></div>
     </div>
   </section>
 

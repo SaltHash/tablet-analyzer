@@ -153,8 +153,6 @@ dd { margin: 0; text-align: right; font-weight: 500; }
 .app[data-view="split"] #paneHist { display: block; flex: 2; }
 .app[data-view="graph"] #paneGraph { display: block; flex: 1; }
 .app[data-view="hist"] #paneHist { display: block; flex: 1; }
-.app[data-view="pressure"] #panePress { display: block; flex: 1; }
-.nodata { position: absolute; left: 0; right: 0; top: 50%; text-align: center; color: var(--soft); font-size: .85rem; pointer-events: none; }
 
 /* crosshair overlay: full-app layer, above hero/viz, below stats (z-index 3) */
 .crosshair-layer {
