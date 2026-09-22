@@ -12,4 +12,4 @@ A tool for analyzing tablet report rate and consistency with statistics and visu
 - connects directly to tablet for accurate stats
 ## Gallery
 <img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/ccdae2df-70b2-43ec-aa86-e71e3150053d" />
-<img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/1467c7ff-9206-44a7-918e-1f5bb7f2ef2c" />
+<img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/d0706413-b343-465f-8201-cc702b8d4442" />
